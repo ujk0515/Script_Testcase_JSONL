@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>테스트케이스 생성기</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            background-color: #f0f2f5;
+            height: 100%;
+        }
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+        .panel {
+            padding: 20px;
+            box-sizing: border-box;
+            background-color: #fff;
+            margin: 10px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+        }
+        .left-panel {
+            flex: 1;
+        }
+        .center-panel {
+            flex: 2;
+        }
+        .right-panel {
+            flex: 1;
+        }
+        h2 {
+            margin-top: 0;
+            border-bottom: 1px solid #e0e0e0;
+            padding-bottom: 10px;
+            color: #333;
+        }
+        .file-upload, .prompt-area, .api-key-area {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+        }
+        input[type="file"], input[type="text"], textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+        button {
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 4px;
+            background-color: #007bff;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #ai-output {
+            flex-grow: 1;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 10px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            background-color: #f8f9fa;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .result-ui {
+            text-align: center;
+            padding: 20px;
+            border-radius: 5px;
+            display: none; /* Initially hidden */
+        }
+        .result-ui.success {
+            background-color: #d4edda;
+            color: #155724;
+            display: block;
+        }
+        .result-ui.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            display: block;
+        }
+        #retry-btn {
+            margin-top: 15px;
+            background-color: #6c757d;
+        }
+        #retry-btn:hover {
+            background-color: #5a6268;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="panel left-panel">
+        <h2>입력</h2>
+        <div class="api-key-area">
+            <label for="api-key">Gemini API Key:</label>
+            <input type="text" id="api-key" placeholder="API 키를 여기에 입력하세요">
+        </div>
+        <div class="file-upload">
+            <label for="desc-image">설명 이미지 업로드</label>
+            <input type="file" id="desc-image">
+        </div>
+        <div class="file-upload">
+            <label for="example-file">예시 엑셀/CSV 파일 업로드</label>
+            <input type="file" id="example-file" accept=".xlsx, .xls, .csv">
+        </div>
+        <div class="prompt-area">
+            <label for="prompt">프롬프트</label>
+            <textarea id="prompt" placeholder="프롬프트를 여기에 입력하세요... (하드코딩)"></textarea>
+        </div>
+        <button id="run-ai-btn">AI 실행</button>
+    </div>
+
+    <div class="panel center-panel">
+        <h2>AI 결과 (JSON)</h2>
+        <div id="ai-output"></div>
+    </div>
+
+    <div class="panel right-panel">
+        <h2>변환</h2>
+        <button id="convert-btn">컨버팅</button>
+        <div id="result-message" class="result-ui"></div>
+    </div>
+</div>
+
+
+<script>
+    // AI 모델 이름을 상수로 정의합니다.
+    const AI_MODEL = "gemini-2.5-flash";
+
+    // 파일을 Gemini API가 이해하는 형식으로 변환하는 헬퍼 함수 (오류 처리 강화)
+    function fileToGenerativePart(file) {
+        console.log("fileToGenerativePart: Reading file...", file.name);
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                console.log("fileToGenerativePart: File read complete.");
+                const base64Data = reader.result.split(',')[1];
+                resolve({
+                    inline_data: {
+                        mime_type: file.type,
+                        data: base64Data,
+                    },
+                });
+            };
+            reader.onerror = (e) => {
+                console.error("fileToGenerativePart: File read error.", e);
+                reject(new Error("파일을 읽는 중 오류가 발생했습니다: " + e.target.error.name));
+            };
+            reader.readAsDataURL(file);
+        });
+    }
+
+    // 엑셀/CSV 파일을 텍스트로 변환하는 헬퍼 함수
+    function excelToText(file) {
+        console.log("excelToText: Reading file...", file.name);
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    console.log("excelToText: File read complete, parsing data...");
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const firstSheetName = workbook.SheetNames[0];
+                    const worksheet = workbook.Sheets[firstSheetName];
+                    const csvText = XLSX.utils.sheet_to_csv(worksheet);
+                    console.log("excelToText: Data parsed successfully.");
+                    resolve(`\n\n--- Example File Content (${file.name}) ---\n${csvText}\n--- End of File Content ---`);
+                } catch (error) {
+                    console.error("excelToText: Error parsing Excel data.", error);
+                    reject(new Error("엑셀/CSV 파일 처리 중 오류가 발생했습니다: " + error.message));
+                }
+            };
+            reader.onerror = (e) => {
+                console.error("excelToText: File read error.", e);
+                reject(new Error("파일을 읽는 중 오류가 발생했습니다: " + e.target.error.name));
+            };
+            reader.readAsArrayBuffer(file);
+        });
+    }
+
+    // AI 실행 버튼 이벤트 리스너
+    document.getElementById('run-ai-btn').addEventListener('click', async () => {
+        // =================================================================
+        // 1. 캐시 없이 현재 입력값 모두 새로 읽어오기
+        // =================================================================
+        console.log("'AI 실행' button clicked. Reading all inputs from scratch (no cache).");
+        const apiKey = document.getElementById('api-key').value;
+        let userPrompt = document.getElementById('prompt').value;
+        const imageFile = document.getElementById('desc-image').files[0];
+        const excelFile = document.getElementById('example-file').files[0];
+        
+        const outputDiv = document.getElementById('ai-output');
+        const runButton = document.getElementById('run-ai-btn');
+
+        if (!apiKey) {
+            alert("Gemini API 키를 입력하세요.");
+            return;
+        }
+
+        if (!userPrompt && !imageFile) {
+            alert("프롬프트를 입력하거나 이미지 파일을 업로드하세요.");
+            return;
+        }
+
+        // 로딩 상태 표시
+        outputDiv.textContent = "파일을 처리하고 AI를 호출 중입니다...";
+        runButton.disabled = true;
+        runButton.textContent = "실행 중...";
+
+        try {
+            const requestParts = [];
+            console.log("Building request parts...");
+
+            // --- 프롬프트 재구성 로직 시작 ---
+            let finalPrompt = "";
+
+            if (imageFile) {
+                finalPrompt += "Your primary task is to generate test cases based on the attached image, which shows a user interface. Analyze the components and functionality shown in the image.\n\n";
+            }
+
+            finalPrompt += userPrompt; // 사용자 기본 프롬프트 추가
+
+            if (excelFile) {
+                console.log("Processing Excel file for prompt...");
+                const excelText = await excelToText(excelFile);
+                finalPrompt += "\n\nThe following text from an Excel file is provided as an EXAMPLE of the desired output format. Use this as a template for the JSON structure and column names. DO NOT simply copy the content of this example.";
+                finalPrompt += excelText;
+                console.log("Excel file content added to prompt.");
+            }
+
+            const fullPrompt = finalPrompt + "\n\nIMPORTANT: The final output must be only a valid JSON array, based on the image content and formatted like the provided example.";
+            requestParts.push({ text: fullPrompt });
+            console.log("Text prompt part added.");
+
+            if (imageFile) {
+                console.log("Processing image file for attachment...");
+                const imagePart = await fileToGenerativePart(imageFile);
+                requestParts.push(imagePart);
+                console.log("Image file processed and added as attachment.");
+            }
+            // --- 프롬프트 재구성 로직 끝 ---
+
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent`;
+            const requestBody = { contents: [{ parts: requestParts }] };
+
+            console.log(`Calling Gemini API at: ${apiUrl}`);
+            console.log("Final request body sent to API:", JSON.stringify(requestBody, null, 2));
+
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': apiKey
+                },
+                body: JSON.stringify(requestBody)
+            });
+            console.log("API response received.", response);
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                console.error("API Error Response:", errorData);
+                throw new Error(`API Error: ${errorData.error.message}`);
+            }
+
+            const data = await response.json();
+            console.log("API data parsed.", data);
+            
+            if (data.candidates && data.candidates.length > 0 && data.candidates[0].content.parts.length > 0) {
+                let rawResponse = data.candidates[0].content.parts[0].text;
+                console.log("Raw AI Response Text:", rawResponse);
+
+                let cleanedJsonString = rawResponse;
+                const startIndex = cleanedJsonString.indexOf('[');
+                const endIndex = cleanedJsonString.lastIndexOf(']');
+
+                if (startIndex !== -1 && endIndex !== -1) {
+                    cleanedJsonString = cleanedJsonString.substring(startIndex, endIndex + 1);
+                } else {
+                    const startBrace = cleanedJsonString.indexOf('{');
+                    const endBrace = cleanedJsonString.lastIndexOf('}');
+                    if (startBrace !== -1 && endBrace !== -1) {
+                        cleanedJsonString = cleanedJsonString.substring(startBrace, endBrace + 1);
+                    }
+                }
+
+                console.log("Cleaned JSON String for parsing:", cleanedJsonString);
+
+                const parsedJson = JSON.parse(cleanedJsonString);
+                outputDiv.textContent = JSON.stringify(parsedJson, null, 2);
+                console.log("Successfully parsed and displayed JSON.");
+
+            } else {
+                let reason = data.candidates && data.candidates.length > 0 ? data.candidates[0].finishReason : "No response";
+                let message = `AI로부터 유효한 응답을 받지 못했습니다. (Reason: ${reason})`;
+                if(data.promptFeedback) {
+                    message += `\nPrompt Feedback: ${JSON.stringify(data.promptFeedback, null, 2)}`;
+                }
+                console.error("No valid candidates from AI", data);
+                throw new Error(message);
+            }
+
+        } catch (error) {
+            outputDiv.textContent = `오류 발생: ${error.message}`;
+            console.error("Error during AI execution:", error);
+        } finally {
+            console.log("Execution finished, resetting button.");
+            runButton.disabled = false;
+            runButton.textContent = "AI 실행";
+        }
+    });
+
+    // 컨버팅 버튼 이벤트 리스너
+    document.getElementById('convert-btn').addEventListener('click', () => {
+        console.log("'컨버팅' button clicked.");
+        const resultUi = document.getElementById('result-message');
+        resultUi.style.display = 'none';
+        resultUi.className = 'result-ui';
+
+        try {
+            const jsonString = document.getElementById('ai-output').textContent;
+            if (!jsonString || jsonString.startsWith("AI가") || jsonString.startsWith("파일을") || jsonString.startsWith("오류")) {
+                throw new Error("AI 결과값이 비어있습니다. AI를 먼저 실행하세요.");
+            }
+            
+            const data = JSON.parse(jsonString);
+
+            const columnsOrder = [
+                "Main Category", "Sub Category", "Detail Category", "TC Summary",
+                "Precondition", "Step", "Expected Result", "Test Level"
+            ];
+
+            const orderedData = data.map(item => {
+                const orderedItem = {};
+                columnsOrder.forEach(col => {
+                    orderedItem[col] = item[col] || '';
+                });
+                return orderedItem;
+            });
+
+            const ws = XLSX.utils.json_to_sheet(orderedData);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "TestCases");
+
+            XLSX.writeFile(wb, 'testcases.xlsx');
+
+            resultUi.classList.add('success');
+            resultUi.innerHTML = '✅ 변환 성공! <br> testcases.xlsx 파일이 다운로드되었습니다.';
+            console.log("Conversion successful.");
+
+        } catch (error) {
+            resultUi.classList.add('error');
+            resultUi.innerHTML = `❌ 변환 실패: ${error.message} <br> <button id="retry-btn">재실행</button>`;
+            console.error("Error during conversion:", error);
+            
+            if(document.getElementById('retry-btn')) {
+                document.getElementById('retry-btn').addEventListener('click', () => {
+                    document.getElementById('convert-btn').click();
+                });
+            }
+        }
+    });
+</script>
+
+</body>
+</html>
